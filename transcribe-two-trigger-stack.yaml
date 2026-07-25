@@ -1,0 +1,502 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Deploys two Lambda functions for Amazon Transcribe on an existing S3 bucket,
+  plus the S3 event notifications needed to trigger them.
+
+Parameters:
+  ExistingBucketName:
+    Type: String
+    Default: transcribe-audio-bucket
+    Description: Existing S3 bucket that receives audio files.
+
+  LambdaExecutionRoleName:
+    Type: String
+    Default: TranscribeProcessingRole
+    Description: IAM role name to create for the Lambda functions.
+
+  StandardInputPrefix:
+    Type: String
+    Default: input/
+    Description: Prefix that triggers the standard Transcribe Lambda.
+
+  StandardOutputPrefix:
+    Type: String
+    Default: output/results/
+    Description: Prefix where standard Transcribe JSON output is written.
+
+  AnalyticsInputPrefix:
+    Type: String
+    Default: analytics/
+    Description: Prefix that triggers the Call Analytics Lambda.
+
+  AnalyticsOutputPrefix:
+    Type: String
+    Default: output/results/analytics/
+    Description: Prefix where Call Analytics output is written.
+
+  TranscribeDataAccessRoleName:
+    Type: String
+    Default: AmazonTranscribeServiceRole-TranscribeDataAccess
+    Description: IAM role name for Amazon Transcribe Call Analytics (will be constructed with account ID).
+
+Resources:
+  TranscribeDataAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref TranscribeDataAccessRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - transcribe.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: TranscribeS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${ExistingBucketName}/*
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub arn:aws:s3:::${ExistingBucketName}/output/results/analytics/*
+
+  TranscribeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref LambdaExecutionRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  TranscribeAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${AWS::StackName}-transcribe-access-policy
+      Description: Managed policy for Transcribe Lambda functions to access S3 and Transcribe services
+      Roles:
+        - !Ref TranscribeExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ObjectAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub arn:aws:s3:::${ExistingBucketName}/*
+          - Sid: S3BucketAccess
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetBucketNotification
+              - s3:PutBucketNotification
+            Resource: !Sub arn:aws:s3:::${ExistingBucketName}
+          - Sid: TranscribeJobAccess
+            Effect: Allow
+            Action:
+              - transcribe:StartTranscriptionJob
+              - transcribe:StartCallAnalyticsJob
+            Resource: 
+              - !Sub arn:aws:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/*
+              - !Sub arn:aws:transcribe:${AWS::Region}:${AWS::AccountId}:call-analytics-job/*
+          - Sid: PassRoleToTranscribe
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !GetAtt TranscribeDataAccessRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: transcribe.amazonaws.com
+
+  TranscribeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-transcribe-trigger
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt TranscribeExecutionRole.Arn
+      Timeout: 180
+      MemorySize: 256
+      Environment:
+        Variables:
+          INPUT_PREFIX: !Ref StandardInputPrefix
+          OUTPUT_PREFIX: !Ref StandardOutputPrefix
+          BUCKET_NAME: !Ref ExistingBucketName
+      Code:
+        ZipFile: |
+          import logging
+          import os
+          import re
+          from urllib.parse import unquote_plus
+          import boto3
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          transcribe = boto3.client("transcribe")
+
+          def lambda_handler(event, context):
+              out_prefix = os.environ.get("OUTPUT_PREFIX", "output/results/")
+              in_prefix = os.environ.get("INPUT_PREFIX", "input/")
+              supported = {"mp4", "mp3", "wav", "flac", "ogg", "amr", "webm"}
+
+              for record in event.get("Records", []):
+                  try:
+                      bucket = record["s3"]["bucket"]["name"]
+                      key = unquote_plus(record["s3"]["object"]["key"])
+
+                      if not key.startswith(in_prefix):
+                          continue
+
+                      parts = key.rsplit(".", 1)
+                      if len(parts) != 2:
+                          continue
+
+                      file_ext = parts[1].lower()
+                      if file_ext not in supported:
+                          continue
+
+                      filename = os.path.basename(key)
+                      clean_name = re.sub(r"[^a-zA-Z0-9._-]", "-", filename)
+                      job_name = f"job_{clean_name[:150]}"
+
+                      try:
+                          transcribe.start_transcription_job(
+                              TranscriptionJobName=job_name,
+                              Media={"MediaFileUri": f"s3://{bucket}/{key}"},
+                              MediaFormat=file_ext,
+                              IdentifyLanguage=True,
+                              OutputBucketName=bucket,
+                              OutputKey=f"{out_prefix}{job_name}.json",
+                          )
+                          logger.info("Started transcription job %s", job_name)
+                      except ClientError as err:
+                          if err.response["Error"]["Code"] == "ConflictException":
+                              logger.info("Skipped existing transcription job %s", job_name)
+                          else:
+                              raise
+                  except Exception as err:
+                      logger.exception("Error processing %s: %s", record, err)
+
+              return {"status": "complete"}
+
+  TranscribeAnalyticsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-transcribe-analytics-trigger
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt TranscribeExecutionRole.Arn
+      Timeout: 180
+      MemorySize: 256
+      Environment:
+        Variables:
+          INPUT_PREFIX: !Ref AnalyticsInputPrefix
+          OUTPUT_PREFIX: !Ref AnalyticsOutputPrefix
+          DATA_ACCESS_ROLE_ARN: !GetAtt TranscribeDataAccessRole.Arn
+          BUCKET_NAME: !Ref ExistingBucketName
+      Code:
+        ZipFile: |
+          import datetime
+          import json
+          import logging
+          import os
+          import re
+          from urllib.parse import unquote_plus
+          import boto3
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          transcribe = boto3.client("transcribe")
+
+          def lambda_handler(event, context):
+              logger.info("Event received: %s", json.dumps(event))
+
+              data_access_role = os.environ["DATA_ACCESS_ROLE_ARN"]
+              input_prefix = os.environ.get("INPUT_PREFIX", "analytics/")
+              output_prefix = os.environ.get("OUTPUT_PREFIX", "output/results/analytics/")
+
+              records = event.get("Records", [])
+              if not records:
+                  return {"status": "skipped", "reason": "no records in event"}
+
+              results = []
+              for record in records:
+                  key = None
+                  try:
+                      bucket = record["s3"]["bucket"]["name"]
+                      key = unquote_plus(record["s3"]["object"]["key"])
+
+                      if not key.startswith(input_prefix):
+                          continue
+
+                      filename = os.path.basename(key)
+                      clean_name = re.sub(r"[^a-zA-Z0-9._-]", "-", filename)
+                      timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                      job_name = f"analytics_{clean_name[:100]}_{timestamp}"
+
+                      transcribe.start_call_analytics_job(
+                          CallAnalyticsJobName=job_name,
+                          Media={"MediaFileUri": f"s3://{bucket}/{key}"},
+                          DataAccessRoleArn=data_access_role,
+                          OutputLocation=f"s3://{bucket}/{output_prefix}",
+                          ChannelDefinitions=[
+                              {"ChannelId": 0, "ParticipantRole": "CUSTOMER"},
+                              {"ChannelId": 1, "ParticipantRole": "AGENT"},
+                          ],
+                          Settings={
+                              "LanguageOptions": ["en-US", "en-GB", "es-US", "fr-FR"]
+                          },
+                      )
+
+                      results.append({"file": key, "job": job_name, "status": "STARTED"})
+                  except Exception as err:
+                      logger.exception("Error for %s: %s", key, err)
+                      results.append(
+                          {"file": key or "unknown", "status": "FAILED", "error": str(err)}
+                      )
+
+              return {"processed_results": results}
+
+  BucketNotificationManagerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-bucket-notification-manager
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt TranscribeExecutionRole.Arn
+      Timeout: 180
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          s3 = boto3.client("s3")
+
+          def respond(event, context, status, data=None, reason=None):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or f"See CloudWatch Log Stream: {context.log_stream_name}",
+                  "PhysicalResourceId": event.get("PhysicalResourceId", f"{event['ResourceProperties']['BucketName']}-notifications"),
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data or {},
+              }).encode("utf-8")
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=body,
+                  method="PUT",
+                  headers={"content-type": "", "content-length": str(len(body))},
+              )
+              urllib.request.urlopen(request)
+
+          def lambda_handler(event, context):
+              try:
+                  props = event["ResourceProperties"]
+                  bucket = props["BucketName"]
+                  managed = props.get("ManagedLambdaConfigurations", [])
+                  managed_ids = {cfg.get("Id") for cfg in managed}
+                  managed_arns = {cfg.get("LambdaFunctionArn") for cfg in managed}
+
+                  current = s3.get_bucket_notification_configuration(Bucket=bucket)
+                  existing = current.get("LambdaFunctionConfigurations", [])
+
+                  keep = []
+                  for cfg in existing:
+                      if cfg.get("Id") in managed_ids:
+                          continue
+                      if cfg.get("LambdaFunctionArn") in managed_arns:
+                          continue
+                      keep.append(cfg)
+
+                  new_lambda_configs = keep if event["RequestType"] == "Delete" else keep + managed
+
+                  payload = {}
+                  if new_lambda_configs:
+                      payload["LambdaFunctionConfigurations"] = new_lambda_configs
+                  if current.get("QueueConfigurations"):
+                      payload["QueueConfigurations"] = current["QueueConfigurations"]
+                  if current.get("TopicConfigurations"):
+                      payload["TopicConfigurations"] = current["TopicConfigurations"]
+                  if current.get("EventBridgeConfiguration"):
+                      payload["EventBridgeConfiguration"] = current["EventBridgeConfiguration"]
+
+                  s3.put_bucket_notification_configuration(
+                      Bucket=bucket,
+                      NotificationConfiguration=payload,
+                  )
+                  respond(event, context, "SUCCESS", {"BucketName": bucket})
+              except Exception as err:
+                  respond(event, context, "FAILED", reason=str(err))
+
+  CreateS3FoldersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-create-s3-folders
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt TranscribeExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          s3 = boto3.client("s3")
+
+          def respond(event, context, status, data=None, reason=None):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or f"See CloudWatch Log Stream: {context.log_stream_name}",
+                  "PhysicalResourceId": event.get("PhysicalResourceId", f"{event['ResourceProperties']['BucketName']}-folders"),
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data or {},
+              }).encode("utf-8")
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=body,
+                  method="PUT",
+                  headers={"content-type": "", "content-length": str(len(body))},
+              )
+              urllib.request.urlopen(request)
+
+          def lambda_handler(event, context):
+              try:
+                  props = event["ResourceProperties"]
+                  bucket = props["BucketName"]
+                  folders = props.get("Folders", [])
+
+                  if event["RequestType"] in ["Create", "Update"]:
+                      for folder in folders:
+                          # Ensure folder ends with /
+                          folder_key = folder if folder.endswith("/") else f"{folder}/"
+                          s3.put_object(Bucket=bucket, Key=folder_key, Body=b"")
+                      
+                      respond(event, context, "SUCCESS", {"FoldersCreated": folders})
+                  elif event["RequestType"] == "Delete":
+                      # Don't delete folders on stack deletion to preserve data
+                      respond(event, context, "SUCCESS", {"Message": "Folders preserved"})
+              except Exception as err:
+                  respond(event, context, "FAILED", reason=str(err))
+
+  CreateBucketFolders:
+    Type: Custom::CreateBucketFolders
+    Properties:
+      ServiceToken: !GetAtt CreateS3FoldersFunction.Arn
+      BucketName: !Ref ExistingBucketName
+      Folders:
+        - input/
+        - output/
+        - analytics/
+
+  AllowS3InvokeTranscribeFunction:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref TranscribeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${ExistingBucketName}
+      SourceAccount: !Ref AWS::AccountId
+
+  AllowS3InvokeAnalyticsFunction:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref TranscribeAnalyticsFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${ExistingBucketName}
+      SourceAccount: !Ref AWS::AccountId
+
+  ConfigureBucketNotifications:
+    Type: Custom::ConfigureBucketNotifications
+    DependsOn:
+      - AllowS3InvokeTranscribeFunction
+      - AllowS3InvokeAnalyticsFunction
+    Properties:
+      ServiceToken: !GetAtt BucketNotificationManagerFunction.Arn
+      BucketName: !Ref ExistingBucketName
+      ManagedLambdaConfigurations:
+        - Id: transcribe-standard-input
+          LambdaFunctionArn: !GetAtt TranscribeFunction.Arn
+          Events:
+            - s3:ObjectCreated:*
+          Filter:
+            Key:
+              FilterRules:
+                - Name: prefix
+                  Value: !Ref StandardInputPrefix
+                - Name: suffix
+                  Value: .mp3
+        - Id: transcribe-standard-input-mp4
+          LambdaFunctionArn: !GetAtt TranscribeFunction.Arn
+          Events:
+            - s3:ObjectCreated:*
+          Filter:
+            Key:
+              FilterRules:
+                - Name: prefix
+                  Value: !Ref StandardInputPrefix
+                - Name: suffix
+                  Value: .mp4
+        - Id: transcribe-standard-input-wav
+          LambdaFunctionArn: !GetAtt TranscribeFunction.Arn
+          Events:
+            - s3:ObjectCreated:*
+          Filter:
+            Key:
+              FilterRules:
+                - Name: prefix
+                  Value: !Ref StandardInputPrefix
+                - Name: suffix
+                  Value: .wav
+        - Id: transcribe-analytics-input
+          LambdaFunctionArn: !GetAtt TranscribeAnalyticsFunction.Arn
+          Events:
+            - s3:ObjectCreated:*
+          Filter:
+            Key:
+              FilterRules:
+                - Name: prefix
+                  Value: !Ref AnalyticsInputPrefix
+                - Name: suffix
+                  Value: .mp3
+
+Outputs:
+  SharedRoleName:
+    Description: Shared IAM role name used by the Lambda functions.
+    Value: !Ref LambdaExecutionRoleName
+
+  StandardTranscribeLambdaArn:
+    Description: ARN of the standard Transcribe trigger Lambda.
+    Value: !GetAtt TranscribeFunction.Arn
+
+  AnalyticsTranscribeLambdaArn:
+    Description: ARN of the Call Analytics trigger Lambda.
+    Value: !GetAtt TranscribeAnalyticsFunction.Arn
+
+  BucketName:
+    Description: S3 bucket configured with both event notifications.
+    Value: !Ref ExistingBucketName

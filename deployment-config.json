@@ -1,0 +1,124 @@
+{
+  "deploymentProfiles": {
+    "development": {
+      "stackName": "audio-transcribe-dev",
+      "bucketName": "audio-transcribe-dev-bucket",
+      "lambdaExecutionRoleName": "AudioTranscribeDevRole",
+      "region": "us-east-1",
+      "standardInputPrefix": "input/",
+      "standardOutputPrefix": "output/results/",
+      "analyticsInputPrefix": "analytics/",
+      "analyticsOutputPrefix": "output/results/analytics/",
+      "transcribeDataAccessRoleName": "AmazonTranscribeServiceRole-Dev",
+      "description": "Development environment for testing transcription workflows"
+    },
+    "staging": {
+      "stackName": "audio-transcribe-staging",
+      "bucketName": "audio-transcribe-staging-bucket",
+      "lambdaExecutionRoleName": "AudioTranscribeStagingRole",
+      "region": "us-east-1",
+      "standardInputPrefix": "input/",
+      "standardOutputPrefix": "output/results/",
+      "analyticsInputPrefix": "analytics/",
+      "analyticsOutputPrefix": "output/results/analytics/",
+      "transcribeDataAccessRoleName": "AmazonTranscribeServiceRole-Staging",
+      "description": "Staging environment for pre-production testing"
+    },
+    "production": {
+      "stackName": "audio-transcribe-prod",
+      "bucketName": "audio-transcribe-prod-bucket",
+      "lambdaExecutionRoleName": "AudioTranscribeProdRole",
+      "region": "us-east-1",
+      "standardInputPrefix": "input/",
+      "standardOutputPrefix": "output/results/",
+      "analyticsInputPrefix": "analytics/",
+      "analyticsOutputPrefix": "output/results/analytics/",
+      "transcribeDataAccessRoleName": "AmazonTranscribeServiceRole-Prod",
+      "description": "Production environment with high availability configuration"
+    }
+  },
+  "defaultProfile": "development",
+  "awsConfig": {
+    "apiVersion": "2017-01-11",
+    "maxRetries": 3,
+    "retryDelayBase": 100,
+    "timeout": 300000
+  },
+  "lambdaConfig": {
+    "memory": 256,
+    "timeout": 180,
+    "runtime": "python3.12",
+    "reservedConcurrentExecutions": null,
+    "ephemeralStorage": 512
+  },
+  "s3Config": {
+    "versioning": false,
+    "encryption": "AES256",
+    "blockPublicAccess": true,
+    "lifecycle": {
+      "enabled": false,
+      "expirationDays": 90
+    }
+  },
+  "transcribeConfig": {
+    "standardTranscription": {
+      "supportedFormats": [
+        "mp3",
+        "mp4",
+        "wav",
+        "flac",
+        "ogg",
+        "amr",
+        "webm"
+      ],
+      "identifyLanguage": true,
+      "maxJobNameLength": 200
+    },
+    "callAnalytics": {
+      "supportedFormats": [
+        "mp3",
+        "mp4",
+        "wav",
+        "flac",
+        "ogg",
+        "amr",
+        "webm"
+      ],
+      "languageOptions": [
+        "en-US",
+        "en-GB",
+        "es-US",
+        "fr-FR"
+      ],
+      "maxJobNameLength": 100,
+      "channelDefinitions": [
+        {
+          "channelId": 0,
+          "participantRole": "CUSTOMER"
+        },
+        {
+          "channelId": 1,
+          "participantRole": "AGENT"
+        }
+      ]
+    }
+  },
+  "monitoring": {
+    "cloudwatch": {
+      "enabled": true,
+      "logRetentionDays": 7,
+      "metricNamespace": "AudioTranscribeApplication"
+    },
+    "alarms": {
+      "lambdaErrorThreshold": 5,
+      "lambdaDurationThreshold": 120000
+    }
+  },
+  "tags": {
+    "Project": "AudioTranscribe",
+    "ManagedBy": "PowerShell",
+    "Environment": "Development",
+    "CostCenter": "Engineering",
+    "CreatedDate": "2024-01-01"
+  }
+}

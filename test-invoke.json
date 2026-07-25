@@ -1,0 +1,14 @@
+﻿{
+    "Records":  [
+                    {
+                        "s3":  {
+                                   "bucket":  {
+                                                  "name":  "audio-transcribe-prod-bucket"
+                                              },
+                                   "object":  {
+                                                  "key":  "input/test-audio.mp3"
+                                              }
+                               }
+                    }
+                ]
+}

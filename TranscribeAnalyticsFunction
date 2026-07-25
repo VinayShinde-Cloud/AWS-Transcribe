@@ -1,0 +1,65 @@
+import json
+import boto3
+import os
+import re
+import datetime
+import logging
+from urllib.parse import unquote_plus
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+transcribe = boto3.client('transcribe')
+
+def lambda_handler(event, context):
+    logger.info(f"Event received: {json.dumps(event)}")
+    
+    # Get Data Access Role from environment variable (set by CloudFormation)
+    DATA_ACCESS_ROLE = os.environ.get('DATA_ACCESS_ROLE_ARN')
+    
+    if not DATA_ACCESS_ROLE:
+        logger.error("DATA_ACCESS_ROLE_ARN environment variable not set")
+        return {"status": "error", "reason": "Missing DATA_ACCESS_ROLE_ARN"}
+    
+    records = event.get('Records', [])
+    if not records:
+        return {"status": "skipped", "reason": "no records in event"}
+
+    results = []
+    for record in records:
+        try:
+            bucket = record['s3']['bucket']['name']
+            key = unquote_plus(record['s3']['object']['key'])
+            
+            # Match your specific folder
+            if not key.startswith('analytics/'):
+                continue
+
+            filename = os.path.basename(key)
+            clean_name = re.sub(r'[^a-zA-Z0-9._-]', '-', filename)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            job_name = f"analytics_{clean_name[:100]}_{timestamp}"
+
+            # FIXED: Place parameters inside the Settings block
+            response = transcribe.start_call_analytics_job(
+                CallAnalyticsJobName=job_name,
+                Media={'MediaFileUri': f's3://{bucket}/{key}'},
+                DataAccessRoleArn=DATA_ACCESS_ROLE,
+                OutputLocation=f"s3://{bucket}/output/results/analytics/",
+                ChannelDefinitions=[
+                    {'ChannelId': 1, 'ParticipantRole': 'AGENT'},
+                    {'ChannelId': 0, 'ParticipantRole': 'CUSTOMER'}
+                ],
+                Settings={
+                    'LanguageOptions': ['en-US', 'en-GB', 'es-US', 'fr-FR']
+                }
+            )
+            
+            results.append({"file": key, "job": job_name, "status": "STARTED"})
+
+        except Exception as e:
+            logger.error(f"Error for {key}: {str(e)}", exc_info=True)
+            results.append({"file": key, "status": "FAILED", "error": str(e)})
+            continue
+
+    return {"processed_results": results}

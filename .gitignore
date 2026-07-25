@@ -1,0 +1,134 @@
+# ============================================================================
+# AWS Transcribe Deployment Suite - .gitignore
+# ============================================================================
+
+# AWS Credentials and Sensitive Files
+*.pem
+*.key
+*.p12
+*.pfx
+aws-credentials.json
+.aws/credentials
+.aws/config
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Deployment Artifacts
+*.zip
+*.tar.gz
+*.7z
+build/
+dist/
+out/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node/npm (if used for Lambda Layer)
+node_modules/
+npm-debug.log
+yarn.error.log
+
+# PowerShell
+*.ps1xml
+*.pssc
+*.psd1
+
+# CloudFormation artifacts
+.cfn-lint/
+cfn-lint-report.*
+
+# Log files
+*.log
+logs/
+CloudTrail/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+*.bak
+*.backup
+
+# Audio files (test samples - too large for git)
+*.mp3
+*.wav
+*.mp4
+*.flac
+*.ogg
+*.amr
+*.webm
+On_Mono_Channel/
+On_2_Channels/
+
+# Lambda function deployments
+TranscribeFunction/lambda_package/
+TranscribeAnalyticsFunction/lambda_package/
+*.package.zip
+
+# VS Code
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+.vscode/extensions.json
+
+# Mac OS specific
+.AppleDouble
+.LSOverride
+
+# Windows specific
+Thumbs.db
+Desktop.ini
+
+# IDE
+.project
+.pydevproject
+.settings/
+.classpath
+
+# Misc project files
+PROJECT-COMPLETE.txt
+ReadersAreTheLeaders
+Test_Sniffet
+test-event.json
+transcribe_test_output.json
+
+# CloudWatch Logs exports
+logs_export_*.json
