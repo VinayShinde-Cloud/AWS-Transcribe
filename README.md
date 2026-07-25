@@ -117,27 +117,7 @@ Edit `deployment-config.json` for environment profiles:
 ```powershell
 # Deploy with defaults
 .\Deploy-TranscribeStack.ps1
-
-# Deploy to specific region
-.\Deploy-TranscribeStack.ps1 -Region "us-west-2"
-
-# Profile-based deployment
-.\Deploy-WithConfig.ps1 -Profile production
-
-# Validate template only
-.\Deploy-TranscribeStack.ps1 -ValidateOnly
-
-# Dry run (preview changes)
-.\Deploy-TranscribeStack.ps1 -DryRun
-
-# Delete infrastructure
-.\Deploy-TranscribeStack.ps1 -Operation DELETE
-
-# Quick operations
-.\Quick-Start.ps1 deploy
-.\Quick-Start.ps1 upload-standard -FilePath "audio.mp3"
-.\Quick-Start.ps1 list-jobs
-.\Quick-Start.ps1 view-logs
+.\deploy.sh
 ```
 
 ## AWS Services Used
