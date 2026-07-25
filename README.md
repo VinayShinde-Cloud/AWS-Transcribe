@@ -118,6 +118,7 @@ Edit `deployment-config.json` for environment profiles:
 # Deploy with defaults
 .\Deploy-TranscribeStack.ps1
 .\deploy.sh
+
 ```
 
 ## AWS Services Used
