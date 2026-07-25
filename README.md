@@ -55,6 +55,13 @@ Transcribe/
 
 ## Quick Start
 
+### 0. Clone the Repository
+
+```powershell
+git clone https://github.com/VinayShinde-Cloud/AWS-Transcribe.git
+cd AWS-Transcribe
+```
+
 ### 1. Prerequisites
 
 - Windows 10+ or PowerShell 5.1+
